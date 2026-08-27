@@ -152,52 +152,54 @@ def generate_tts_audio(text: str) -> bytes:
         return b""
 
 # --- FLASK ENDPOINTS ---
-@app.route("/", methods=["GET"])
-def health_check():
-    return jsonify({"status": "All-Groq Glasses Server is Online"})
+# Keep track of whether the assistant is actively engaged in a conversation session
+active_sessions = {} # We can map this by an IP or keep a simple global flag if single-user
 
 @app.route("/chat", methods=["POST"])
 def chat_endpoint():
     global chat_history
     
-    # --- HARD SECURITY CHECK ---
     if request.headers.get("X-Glasses-Secret") != GLASSES_SECRET:
-        print("[Security Warning]: Unauthorized request blocked!")
         return jsonify({"error": "Unauthorized"}), 401
-    
-    print("[Server]: Received secure transmission from glasses.")
 
     try:
-        if 'audio_file' not in request.files:
-            return jsonify({"error": "No audio file provided"}), 400
-            
-        audio_file = request.files['audio_file']
-        image_file = request.files.get('image_file')
+        audio_bytes = request.data
+        if not audio_bytes or len(audio_bytes) < 100:
+            return jsonify({"error": "Audio stream empty"}), 400
 
-        # 1. Transcribe using Groq Whisper
-        audio_bytes = audio_file.read()
+        # 1. Transcribe audio via Groq Whisper
         transcription = client.audio.transcriptions.create(
-            file=(audio_file.filename, audio_bytes),
+            file=("audio.wav", audio_bytes),
             model="whisper-large-v3"
         )
-        user_text = transcription.text
+        user_text = transcription.text.strip()
         print(f"[Glasses heard]: {user_text}")
 
-        # 2. Add Vision context (if image exists)
-        if image_file:
-            image_bytes = image_file.read()
-            base64_img = base64.b64encode(image_bytes).decode('utf-8')
-            chat_history = [{"role": "system", "content": SYSTEM_PROMPT}] 
-            user_content = [
-                {"type": "text", "text": user_text},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
-            ]
-        else:
-            user_content = user_text
+        # 2. Check if the wake word "viper" is present in the audio
+        has_wake_word = "viper" in user_text.lower()
 
-        chat_history.append({"role": "user", "content": user_content})
+        if not has_wake_word:
+            # If "viper" wasn't said, ignore the audio and return 204 (LED stays static)
+            print("[Server]: Wake word not detected. Staying in standby.")
+            return Response(status=204)
 
-        # 3. Groq LLM Logic (using Qwen)
+        # --- WAKE WORD DETECTED! ---
+        print("[Server]: Wake word 'viper' detected! Activating session...")
+
+        # Strip the wake word out so the LLM doesn't get confused by "viper what is the time"
+        clean_command = user_text.lower().replace("viper", "").strip()
+
+        # If they *only* said "Viper" and nothing else, prompt them or acknowledge state change
+        if not clean_command:
+            # Send back a short audio signal or confirmation that it's listening
+            ack_audio = generate_tts_audio("I'm listening.")
+            # We can use a custom header to tell the ESP32: "Wake word found, turn off standby LED!"
+            return Response(ack_audio, mimetype="audio/wav", headers={"X-Wake-Detected": "true"})
+
+        # If they said "Viper [command]" in one go, process it immediately
+        chat_history.append({"role": "user", "content": clean_command})
+
+        # LLM Logic & Tools
         response = client.chat.completions.create(
             model="qwen/qwen3.6-27b",
             messages=chat_history,
@@ -231,15 +233,13 @@ def chat_endpoint():
         chat_history.append({"role": "assistant", "content": final_text})
         print(f"[Assistant]: {final_text}")
 
-        # Memory Cleanup
         if len(chat_history) > 10:
             chat_history = [chat_history[0]] + chat_history[-6:]
 
-        # 4. Generate Groq TTS Audio
         wav_bytes = generate_tts_audio(final_text)
 
-        # 5. Send WAV directly back to ESP32
-        return Response(wav_bytes, mimetype="audio/wav")
+        # Return audio with header telling ESP32 wake word was successfully hit
+        return Response(wav_bytes, mimetype="audio/wav", headers={"X-Wake-Detected": "true"})
 
     except Exception as e:
         print(f"[Error]: {e}")
