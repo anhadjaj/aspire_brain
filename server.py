@@ -158,6 +158,39 @@ active_sessions = {} # We can map this by an IP or keep a simple global flag if 
 # Keep track of vision mode per user/device session
 user_vision_modes = {} # In a real deployment, map this by a device ID header
 
+# --- ENDPOINT 1: Dedicated lightweight wake-word checker ---
+@app.route("/check-wake", methods=["POST"])
+def check_wake_endpoint():
+    if request.headers.get("X-Glasses-Secret") != GLASSES_SECRET:
+        return jsonify({"error": "Unauthorized"}), 401
+
+    try:
+        audio_file = request.files.get('audio_file')
+        if not audio_file:
+            return jsonify({"error": "No audio provided"}), 400
+
+        audio_bytes = audio_file.read()
+
+        # Transcribe short burst to check for "viper"
+        transcription = client.audio.transcriptions.create(
+            file=("audio.wav", audio_bytes),
+            model="whisper-large-v3"
+        )
+        user_text = transcription.text.strip().lower()
+        print(f"[Wake Check Heard]: {user_text}")
+
+        if "viper" in user_text:
+            print("[Server]: Wake word 'viper' detected! Signaling ESP32 to open mic.")
+            return jsonify({"status": "awake"}), 200
+        else:
+            return Response(status=204) # Stay in passive listening mode
+
+    except Exception as e:
+        print(f"[Wake Check Error]: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# --- ENDPOINT 2: Your exact existing chat & vision handler ---
 @app.route("/chat", methods=["POST"])
 def chat_endpoint():
     global chat_history
@@ -166,7 +199,6 @@ def chat_endpoint():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        # We use multipart form-data now so we can accept optional images
         audio_file = request.files.get('audio_file')
         image_file = request.files.get('image_file')
 
@@ -183,27 +215,19 @@ def chat_endpoint():
         user_text = transcription.text.strip()
         print(f"[Glasses heard]: {user_text}")
 
-        # --- WAKE WORD FILTER ---
-        if "viper" not in user_text.lower():
-            return Response(status=204)
-
+        # (Your clean command & mode-switching logic continues here...)
         clean_command = user_text.lower().replace("viper", "").strip()
 
-        # 2. Check for Mode Switch Commands Spoken by User
         mode_response_text = None
         if "start vision" in clean_command:
             print("[Server]: Switching session to VISION mode.")
             mode_response_text = "Vision active."
-            # Here you can set a flag or return a header instructing the ESP32 to enable camera captures
         elif "start voice" in clean_command or "stop vision" in clean_command:
             print("[Server]: Switching session to VOICE ONLY mode.")
             mode_response_text = "Voice only."
-            # Instruct ESP32 to disable camera captures
 
-        # If the user just switched modes, we can instantly respond with audio confirmation without hitting the LLM
         if mode_response_text:
             wav_bytes = generate_tts_audio(mode_response_text)
-            # Send a custom header so the ESP32 updates its local vision state flag!
             response_headers = {
                 "X-Wake-Detected": "true",
                 "X-Vision-Mode": "true" if "vision" in mode_response_text else "false"
