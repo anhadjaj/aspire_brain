@@ -155,6 +155,9 @@ def generate_tts_audio(text: str) -> bytes:
 # Keep track of whether the assistant is actively engaged in a conversation session
 active_sessions = {} # We can map this by an IP or keep a simple global flag if single-user
 
+# Keep track of vision mode per user/device session
+user_vision_modes = {} # In a real deployment, map this by a device ID header
+
 @app.route("/chat", methods=["POST"])
 def chat_endpoint():
     global chat_history
@@ -163,11 +166,16 @@ def chat_endpoint():
         return jsonify({"error": "Unauthorized"}), 401
 
     try:
-        audio_bytes = request.data
-        if not audio_bytes or len(audio_bytes) < 100:
-            return jsonify({"error": "Audio stream empty"}), 400
+        # We use multipart form-data now so we can accept optional images
+        audio_file = request.files.get('audio_file')
+        image_file = request.files.get('image_file')
 
-        # 1. Transcribe audio via Groq Whisper
+        if not audio_file:
+            return jsonify({"error": "No audio file provided"}), 400
+
+        audio_bytes = audio_file.read()
+
+        # 1. Transcribe via Groq Whisper
         transcription = client.audio.transcriptions.create(
             file=("audio.wav", audio_bytes),
             model="whisper-large-v3"
@@ -175,31 +183,50 @@ def chat_endpoint():
         user_text = transcription.text.strip()
         print(f"[Glasses heard]: {user_text}")
 
-        # 2. Check if the wake word "viper" is present in the audio
-        has_wake_word = "viper" in user_text.lower()
-
-        if not has_wake_word:
-            # If "viper" wasn't said, ignore the audio and return 204 (LED stays static)
-            print("[Server]: Wake word not detected. Staying in standby.")
+        # --- WAKE WORD FILTER ---
+        if "viper" not in user_text.lower():
             return Response(status=204)
 
-        # --- WAKE WORD DETECTED! ---
-        print("[Server]: Wake word 'viper' detected! Activating session...")
-
-        # Strip the wake word out so the LLM doesn't get confused by "viper what is the time"
         clean_command = user_text.lower().replace("viper", "").strip()
 
-        # If they *only* said "Viper" and nothing else, prompt them or acknowledge state change
-        if not clean_command:
-            # Send back a short audio signal or confirmation that it's listening
-            ack_audio = generate_tts_audio("I'm listening.")
-            # We can use a custom header to tell the ESP32: "Wake word found, turn off standby LED!"
-            return Response(ack_audio, mimetype="audio/wav", headers={"X-Wake-Detected": "true"})
+        # 2. Check for Mode Switch Commands Spoken by User
+        mode_response_text = None
+        if "start vision" in clean_command:
+            print("[Server]: Switching session to VISION mode.")
+            mode_response_text = "Vision active."
+            # Here you can set a flag or return a header instructing the ESP32 to enable camera captures
+        elif "start voice" in clean_command or "stop vision" in clean_command:
+            print("[Server]: Switching session to VOICE ONLY mode.")
+            mode_response_text = "Voice only."
+            # Instruct ESP32 to disable camera captures
 
-        # If they said "Viper [command]" in one go, process it immediately
-        chat_history.append({"role": "user", "content": clean_command})
+        # If the user just switched modes, we can instantly respond with audio confirmation without hitting the LLM
+        if mode_response_text:
+            wav_bytes = generate_tts_audio(mode_response_text)
+            # Send a custom header so the ESP32 updates its local vision state flag!
+            response_headers = {
+                "X-Wake-Detected": "true",
+                "X-Vision-Mode": "true" if "vision" in mode_response_text else "false"
+            }
+            return Response(wav_bytes, mimetype="audio/wav", headers=response_headers)
 
-        # LLM Logic & Tools
+        # 3. Handle Normal Prompt + Optional Image
+        if image_file:
+            print("[Server]: Processing request WITH image attachment.")
+            image_bytes = image_file.read()
+            base64_img = base64.b64encode(image_bytes).decode('utf-8')
+            
+            chat_history = [{"role": "system", "content": SYSTEM_PROMPT}] 
+            user_content = [
+                {"type": "text", "text": clean_command if clean_command else "What am I looking at?"},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
+            ]
+        else:
+            user_content = clean_command if clean_command else "I'm listening."
+
+        chat_history.append({"role": "user", "content": user_content})
+
+        # 4. Groq LLM Generation & Tool Execution
         response = client.chat.completions.create(
             model="qwen/qwen3.6-27b",
             messages=chat_history,
@@ -237,8 +264,6 @@ def chat_endpoint():
             chat_history = [chat_history[0]] + chat_history[-6:]
 
         wav_bytes = generate_tts_audio(final_text)
-
-        # Return audio with header telling ESP32 wake word was successfully hit
         return Response(wav_bytes, mimetype="audio/wav", headers={"X-Wake-Detected": "true"})
 
     except Exception as e:
