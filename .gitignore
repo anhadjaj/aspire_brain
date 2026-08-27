@@ -1,0 +1,10 @@
+# Secret Google Auth Files (DO NOT COMMIT)
+credentials.json
+token.json
+
+# Local Environment Variable Files
+.env
+
+# Python Cache & Build Artifacts
+__pycache__/
+*.pyc
