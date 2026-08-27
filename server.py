@@ -69,7 +69,7 @@ SYSTEM_PROMPT = (
   "If the subject is unclear, obscured, distant, or unreadable, say so rather than guessing. "
   "Do not use filler phrases like 'I see'. Do not use markdown, emojis, asterisks, or special formatting. "
   "For time based outputs don't say 7 o clock pm, instead say 7 p.m. or 7 in the evening. "
-  "For dates, say 'August 16th' instead of 'August 16'.";
+  "For dates, say 'August 16th' instead of 'August 16'."
 )
 chat_history = [{"role": "system", "content": SYSTEM_PROMPT}]
 
