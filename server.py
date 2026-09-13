@@ -32,7 +32,7 @@ GOOGLE_REFRESH_TOKEN = os.environ.get("GOOGLE_REFRESH_TOKEN")
 FIREBASE_DB_URL = "https://viper-assistant-267bb-default-rtdb.firebaseio.com"
 
 # The security header your ESP32 must send
-SECRET_GLASSES_TOKEN = os.environ.get("SECRET_GLASSES_TOKEN", "AnhadASPIRE2026SecureKey")
+SECRET_GLASSES_TOKEN = os.environ.get("SECRET_GLASSES_TOKEN")
 
 # ================= STATE =================
 app = FastAPI(title="VIPER Gateway")
