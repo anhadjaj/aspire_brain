@@ -1,8 +1,14 @@
+fastapi
 flask
+uvicorn
 gunicorn
+requests
 groq
 gTTS
 google-api-python-client
 google-auth-oauthlib
 google-auth-httplib2
 newsapi-python
+google-genai
+python-multipart
+pillow
